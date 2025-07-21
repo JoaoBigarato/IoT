@@ -8,6 +8,8 @@ import os
 
 # Criação da aplicação FastAPI
 app = FastAPI()
+
+#Configuração dotenv
 load_dotenv()
 
 HOST_DB = os.getenv('HOST_DB')
