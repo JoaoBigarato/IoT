@@ -7,11 +7,17 @@
 void saveToEEPROM();
 void sendDataToMQTT();
 void clearEEPROM();
+void reconnectWiFi();
+void connectMQTT();
+void calculateOperatingTime();
+void sendData(String payload);
+String collectData();  // Alterado para retornar payload
+void readEEPROM();  // Função para ler os dados da EEPROM
 
 // Configurações do Wi-Fi
 const char* mqtt_user = "iot";
 const char* mqtt_password = "])T=k651zLp2";
-const char* mqtt_client_id = "ESP32_AcIoT";
+const char* mqtt_client_id = "ESP32_AcIoT2";
 
 // Configurações do Mosquitto (Broker MQTT)
 const char* mqtt_server = "172.210.124.6";  // IP do Mosquitto
@@ -31,6 +37,10 @@ unsigned long tempoDesligada = 0;
 unsigned long tempoLigadoInicial = 0;  // Marca o início do tempo ligado
 unsigned long tempoDesligadoInicial = 0;  // Marca o início do tempo desligado
 int contagemPecas = 0;
+bool estadoAnterioPecas = false;  // Inicializado corretamente
+
+unsigned long lastSendTime = 0;  // Armazena o último tempo em que as informações foram enviadas
+const unsigned long sendInterval = 5000;  // Intervalo de envio em milissegundos (5 segundos, por exemplo)
 
 void setup() {
   Serial.begin(115200);
@@ -42,57 +52,72 @@ void setup() {
 
   // Inicializando o WiFiManager
   WiFiManager wifiManager;
+  wifiManager.setWiFiAutoReconnect(true);
 
-  // Inicia o ponto de acesso para configurar Wi-Fi, se necessário
-  if (WiFi.status() != WL_CONNECTED) {
-    // Se não estiver conectado, então conecta à rede Wi-Fi usando as credenciais fornecidas
-    WiFi.begin("SalaTI", "yeeuwk9k"); // Wifi de teste "BIGARATO", "B1g4r4t0!"
+  // Conectar ao Wi-Fi
+  bool conectou = wifiManager.autoConnect("ESP32_Access_Point");  // Cria ponto de acesso se necessário
 
-    // Espera a conexão Wi-Fi ser estabelecida
-    while (WiFi.status() != WL_CONNECTED) {
-      delay(1000);
-      Serial.println("Tentando conectar ao Wi-Fi...");
-    }
-    Serial.println("Conectado ao Wi-Fi!");
-
-    // Se a conexão falhar, entra no modo de configuração usando o WiFiManager
-    if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("Falha ao conectar ao Wi-Fi!");
-      wifiManager.autoConnect("ESP32_Access_Point");  // Cria ponto de acesso se necessário
-      Serial.println("Configurando Wi-Fi via Ponto de Acesso");
-    }
-  }
-
- // Inicia a funcionalidade ArduinoOTA
+  // Inicia a funcionalidade ArduinoOTA
   ArduinoOTA.setHostname("ESP32_AcIoT");
   ArduinoOTA.setPassword("admin123");  // Senha para o OTA (se desejar, pode ser configurada)
-  ArduinoOTA.setPort(8266);             // Porta padrão para OTA (opcional)
-  ArduinoOTA.begin();  // Inicializa a OTA
+  ArduinoOTA.begin();
+  Serial.println("Pronto para OTA!");
 
-if (WiFi.status() == WL_CONNECTED) {
-   Serial.print("Conectado ao Wi-Fi. IP: ");
-   Serial.println(WiFi.localIP());
-}
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Conectado ao Wi-Fi. IP: ");
+    Serial.println(WiFi.localIP());
+  }
+
+  // Ler os dados da EEPROM (restaurando valores persistentes)
+  readEEPROM();
 
   // Configurar o cliente MQTT
   client.setServer(mqtt_server, mqtt_port);  // Porta padrão do Mosquitto
 }
 
-void reconnect() {
-  // Reconnect to Wi-Fi if needed
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Reconectando ao Wi-Fi...");
-    WiFi.disconnect();
-    WiFi.reconnect();  // Tenta reconectar ao Wi-Fi
-    delay(2000);  // Aguarda antes de tentar novamente
+void loop() {
+  ArduinoOTA.handle();  // Verifica atualizações OTA
+  
+  // Reconectar ao Wi-Fi se necessário
+  reconnectWiFi();
+  
+  // Verificar e calcular o tempo de operação
+  calculateOperatingTime();
+
+  bool sendDataNow = (millis() - lastSendTime) >= sendInterval;  // Verifica se chegou o momento de enviar os dados
+  if (sendDataNow) {
+    // Coleta os dados e os envia
+    String payload = collectData();
+    sendData(payload);
+    lastSendTime = millis();  // Atualiza o tempo do último envio
   }
 
-  // Tenta reconectar ao broker MQTT
+  // Conectar ao MQTT se necessário
+  if (!client.connected()) {
+    connectMQTT();
+  }
+
+  client.loop();  // Processa as mensagens MQTT
+}
+
+void reconnectWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Reconectando ao Wi-Fi...");
+    WiFi.reconnect();
+    delay(2000);
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Wi-Fi reconectado!");
+    } else {
+      Serial.println("Falha ao reconectar no Wi-Fi!");
+    }
+  }
+}
+
+void connectMQTT() {
   while (!client.connected()) {
     Serial.println("Conectando ao broker MQTT...");
     if (client.connect(mqtt_client_id, mqtt_user, mqtt_password)) {
-      Serial.println("Conectado!");
-      // client.subscribe("portao/comando"); // Descomente se quiser assinar um tópico
+      Serial.println("Conectado ao MQTT!");
     } else {
       Serial.print("Falha, rc=");
       Serial.print(client.state());
@@ -131,33 +156,26 @@ void saveToEEPROM() {
   Serial.println("Dados gravados na EEPROM.");
 }
 
-void loop() {
+void readEEPROM() {
+  // Lê os dados da EEPROM
+  tempoLigada = EEPROM.read(0);
+  tempoDesligada = EEPROM.read(4);
+  contagemPecas = EEPROM.read(8);
 
-  ArduinoOTA.handle();  // Chama a função OTA para permitir atualizações via rede
-  // Verificar a conexão com o Wi-Fi
-  if (WiFi.status() == WL_CONNECTED) {
-    // Se o Wi-Fi estiver conectado e a EEPROM tiver dados para enviar
-    if (EEPROM.read(0) != 0 || EEPROM.read(4) != 0 || EEPROM.read(8) != 0) {
-      tempoLigada = EEPROM.read(0);
-      tempoDesligada = EEPROM.read(4);
-      contagemPecas = EEPROM.read(8);
-      sendDataToMQTT();
-      clearEEPROM();  // Limpa a EEPROM após enviar os dados
-    }
-
-    if (!client.connected()) {
-      reconnect();  // Tenta reconectar ao broker MQTT
-    }
-    client.loop();
+  if (tempoLigada == 0 && tempoDesligada == 0 && contagemPecas == 0) {
+    Serial.println("Nenhum dado encontrado na EEPROM. Iniciando valores padrão.");
   } else {
-    Serial.println("Está entrando aqui");
-    // Se o Wi-Fi estiver desconectado, armazene os dados na EEPROM
-    saveToEEPROM();
-    WiFi.reconnect();  // Tenta reconectar ao Wifi
-    
+    Serial.println("Dados restaurados da EEPROM:");
+    Serial.print("Tempo Ligado: ");
+    Serial.println(tempoLigada);
+    Serial.print("Tempo Desligado: ");
+    Serial.println(tempoDesligada);
+    Serial.print("Contagem de Peças: ");
+    Serial.println(contagemPecas);
   }
+}
 
-  // Lê o status da máquina (ligada/desligada)
+void calculateOperatingTime() {
   bool status = digitalRead(pinStatus);
   if (status == HIGH) {  // Máquina ligada
     if (!maquinaLigada) {
@@ -174,30 +192,39 @@ void loop() {
   // Acumular o tempo de máquina ligada e desligada
   if (maquinaLigada) {
     tempoLigada += millis() - tempoLigadoInicial;  // Acumula o tempo de operação
+    tempoLigadoInicial = millis();  // Atualiza o tempo inicial para evitar incremento excessivo
   } else {
     tempoDesligada += millis() - tempoDesligadoInicial;  // Acumula o tempo de parada
+    tempoDesligadoInicial = millis();  // Atualiza o tempo inicial para evitar incremento excessivo
   }
 
-  // Simula a contagem de peças (fechamento de contato do CLP)
-  if (digitalRead(pinPecas) == HIGH) {
-    contagemPecas++;
+  bool estadoPinPecas = digitalRead(pinPecas);  // Lê o estado atual do pino
+
+  // Verifica se houve uma transição de LOW para HIGH (indicando fabricação de uma peça)
+  if (estadoAnterioPecas == false && estadoPinPecas == HIGH) {
+    contagemPecas++;  // Incrementa a contagem de peças
     Serial.print("Peças fabricadas: ");
     Serial.println(contagemPecas);
   }
 
-  // Enviar os dados para o Mosquitto via MQTT
-  if (WiFi.status() == WL_CONNECTED && client.connected()) {
-    String payload = "{";
-    payload += "\"tempoLigada\": " + String(tempoLigada) + ","; 
-    payload += "\"tempoDesligada\": " + String(tempoDesligada) + ","; 
-    payload += "\"contagemPecas\": " + String(contagemPecas) + "}";
+  // Atualiza o estado anterior do pino para o estado atual
+  estadoAnterioPecas = estadoPinPecas;
+}
 
-    client.publish("acovisa/maquina/dados", payload.c_str());
-    Serial.println("Dados enviados para o Mosquitto:");
-    Serial.println(payload);
+String collectData() {
+  String payload = "{";
+  payload += "\"tempoLigada\": " + String(tempoLigada) + ",";
+  payload += "\"tempoDesligada\": " + String(tempoDesligada) + ",";
+  payload += "\"contagemPecas\": " + String(contagemPecas) + "}";
+  return payload;  // Agora retorna o payload corretamente
+}
+
+void sendData(String payload) {
+  // Verifica se está conectado ao Wi-Fi
+  if (WiFi.status() == WL_CONNECTED) {
+    sendDataToMQTT();
+  } else {
+    // Caso o Wi-Fi não esteja conectado, salva na EEPROM
+    saveToEEPROM();
   }
-
-  
-
-  delay(40000);  // Envia os dados a cada 10 segundos
 }
