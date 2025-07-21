@@ -3,10 +3,17 @@ from pydantic import BaseModel
 import psycopg2
 from psycopg2 import sql
 from sqlalchemy import Column, Integer
+from dotenv import load_dotenv
+import os
 
 # Criação da aplicação FastAPI
 app = FastAPI()
+load_dotenv()
 
+HOST_DB = os.getenv('HOST_DB')
+USER_DB = os.getenv('USER_DB')
+PASSWORD_DB = os.getenv('PASSWORD_DB')
+NAME_DB = os.getenv('NAME_DB')
 # Definindo o modelo de dados esperado
 class Monitoramento(BaseModel):
     tempoLigada:int = Column(Integer,nullable=False)
@@ -18,10 +25,10 @@ def conectar_banco():
     try:
         # Conexão com o banco de dados PostgreSQL
         conn = psycopg2.connect(
-            host="c-cluster-postgre-dev.37w2ssp3smqctf.postgres.cosmos.azure.com",  # Endereço do banco de dados
-            user="arduino",    # Seu usuário do PostgreSQL
-            password="i0I32>4IIDZ@",  # Sua senha do PostgreSQL
-            dbname="teste"  # Nome do banco de dados
+            host=HOST_DB,  # Endereço do banco de dados
+            user=USER_DB,    # Seu usuário do PostgreSQL
+            password=PASSWORD_DB,  # Sua senha do PostgreSQL
+            dbname=NAME_DB  # Nome do banco de dados
         )
         return conn
     except psycopg2.Error as err:
